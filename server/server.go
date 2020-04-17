@@ -5,7 +5,11 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"sync"
 )
+
+var requestCountMap = make(map[int]int64)
+var mapMutex = sync.RWMutex{}
 
 func main() {
 	http.HandleFunc("/", handler)
@@ -14,8 +18,16 @@ func main() {
 
 func handler(w http.ResponseWriter, r *http.Request) {
 	errorCode := getErrorCode(r)
+	mapMutex.Lock()
+	if val, ok := requestCountMap[errorCode]; ok {
+		requestCountMap[errorCode] = val + 1
+	} else {
+		requestCountMap[errorCode] = 0
+	}
+	mapMutex.Unlock()
+
 	w.WriteHeader(errorCode)
-	fmt.Fprintf(w, "Returning code %d", errorCode)
+	fmt.Fprintf(w, "RequestCount = %d, Count = %d", errorCode, requestCountMap[errorCode])
 }
 
 func getErrorCode(r *http.Request) int {
