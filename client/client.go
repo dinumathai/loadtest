@@ -3,18 +3,24 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io/ioutil"
+	"io"
+	"log"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 )
 
 var (
-	minutesToRun int64
+	minutesToRunInput int64
+	reqPerMinInput    int64
+	serverURLInput    string
 )
 
 func init() {
-	flag.Int64Var(&minutesToRun, "min", 0, "Total minutes that the program must run")
+	flag.Int64Var(&minutesToRunInput, "min", 0, "Total minutes that the program must run")
+	flag.Int64Var(&reqPerMinInput, "rpm", 1000, "Requests per minute for each URL")
+	flag.StringVar(&serverURLInput, "url", "", "Server URL to send requests to")
 	flag.Usage = usage
 	flag.Parse()
 }
@@ -31,16 +37,22 @@ type serverConfig struct {
 }
 
 func getConfig() []serverConfig {
+	if serverURLInput != "" {
+		return []serverConfig{
+			{
+				URL:           serverURLInput,
+				RequestPerMin: int(reqPerMinInput),
+			},
+		}
+	}
 	return []serverConfig{
-		serverConfig{
+		{
 			URL:           "http://localhost:8080?error-code=200",
 			RequestPerMin: 1000,
-		},
-		serverConfig{
+		}, {
 			URL:           "http://localhost:8080?error-code=400",
 			RequestPerMin: 1000,
-		},
-		serverConfig{
+		}, {
 			URL:           "http://localhost:8080?error-code=500",
 			RequestPerMin: 1000,
 		},
@@ -48,16 +60,18 @@ func getConfig() []serverConfig {
 }
 
 func main() {
-	fmt.Println("************* Starting ***********")
-	if minutesToRun == 0 {
-		minutesToRun = 9223372036854775807
+	log.Println("************* Starting ***********")
+	var minutesToRun int64 = 9223372036854775807
+	if minutesToRunInput != 0 {
+		minutesToRun = minutesToRunInput
 	}
 	for i := int64(0); i < minutesToRun; i++ {
-		fmt.Printf("Running for %d th minute\n", i)
+		log.Printf("Running for %d th minute\n", i+1)
 		go triggerRequest()
 		time.Sleep(1 * time.Minute)
 	}
-	fmt.Println("************* Stopping ***********")
+	time.Sleep(10 * time.Second) // wait for 10 seconds for requests to complete
+	log.Println("************* Stopping ***********")
 }
 
 func triggerRequest() {
@@ -68,16 +82,29 @@ func triggerRequest() {
 
 func triggerRequestForOneConf(conf serverConfig) {
 	sleepTimeMilliSec := int64(60000 / conf.RequestPerMin)
+	var latencyMutex = sync.RWMutex{}
+	latencySum := time.Duration(0)
 	for i := int(0); i < conf.RequestPerMin; i++ {
-		go getURL(conf.URL)
+		go func() {
+			lat := getURL(conf.URL)
+			latencyMutex.Lock()
+			latencySum += lat
+			latencyMutex.Unlock()
+		}()
 		time.Sleep(time.Duration(sleepTimeMilliSec) * time.Millisecond)
 	}
+	average := latencySum / time.Duration(conf.RequestPerMin)
+	log.Printf("Average latency for - URL=%s; RPM=%d; Latency=%v\n",
+		conf.URL, conf.RequestPerMin, average)
 }
 
-func getURL(url string) {
+func getURL(url string) time.Duration {
+	start := time.Now()
 	response, err := http.Get(url)
-	if err == nil {
-		defer response.Body.Close()
-		ioutil.ReadAll(response.Body)
+	if err != nil {
+		return time.Since(start)
 	}
+	defer response.Body.Close()
+	io.ReadAll(response.Body)
+	return time.Since(start)
 }
